@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from numpy import ndarray
 import numpy as np
 import cv2
@@ -18,52 +18,137 @@ class ReceiptEnhancer:
         if len(image.shape) > 2:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        grey = image
-        binary = self.adaptive_binary_threshold(grey)
+        binary = self.adaptive_binary_threshold(image)
 
-        mean_intensity = np.mean(image)
+        if np.count_nonzero(binary) == 0:
+            return []
+
         resolution = min(image.shape[0], image.shape[1])
-
+        mean_intensity = np.mean(image)
         canny_lower_threshold = int(max(0, mean_intensity * 0.5))
         canny_upper_threshold = int(min(255, mean_intensity * 1.5))
-
         aperture_size = max(3, int(resolution / 500))
-        hough_threshold = max(1, int(mean_intensity / 10))
 
+        edges = cv2.Canny(binary, canny_lower_threshold, canny_upper_threshold, apertureSize=aperture_size)
+
+        roi_size_fraction = self.calculate_roi_size_fraction(image)
+        roi_size = min(image.shape[0], image.shape[1]) * roi_size_fraction
+        intersection_distance_threshold = roi_size * 0.01
+
+        hough_threshold = max(1, int(roi_size / 10))
         max_gap = max(1, int(resolution / 100))
 
-        borders = cv2.Canny(binary,
-                            canny_lower_threshold,
-                            canny_upper_threshold,
-                            apertureSize=aperture_size)
-
-        lines = cv2.HoughLinesP(borders, 1, np.pi / 180, threshold=hough_threshold,
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=hough_threshold,
                                 minLineLength=int(length[0]), maxLineGap=max_gap)
 
         if lines is None:
             return []
 
-        if min_distance == (0, 0):
-            return lines
-
-        min_dist, max_dist = min_distance
-        filtered_lines = []
-        line_set = set()
-
+        # Calcular distâncias entre todas as linhas
+        line_distances = np.zeros((len(lines), len(lines)))
         for i in range(len(lines)):
-            if i in line_set:
+            for j in range(i + 1, len(lines)):
+                dist = np.linalg.norm(np.array(lines[i][0][:2]) - np.array(lines[j][0][:2]))
+                line_distances[i][j] = dist
+
+        # Encontrar grupos de linhas que não atendem aos critérios de distância mínima e máxima
+        lines_to_remove = set()
+        for i in range(len(lines)):
+            if i in lines_to_remove:
                 continue
             for j in range(i + 1, len(lines)):
-                if j in line_set:
+                if j in lines_to_remove:
                     continue
-                dist = np.linalg.norm(np.array(lines[i][0][:2]) - np.array(lines[j][0][:2]))
-                if min_dist <= dist <= max_dist:
-                    filtered_lines.append(lines[i])
-                    filtered_lines.append(lines[j])
-                    line_set.add(i)
-                    line_set.add(j)
+                if min_distance[0] <= line_distances[i][j] <= min_distance[1]:
+                    lines_to_remove.add(i)
+                    lines_to_remove.add(j)
+
+        # Remover grupos de linhas que não atendem aos critérios
+        filtered_lines = [lines[i] for i in range(len(lines)) if i not in lines_to_remove]
 
         return filtered_lines
+
+    def calculate_roi_size_fraction(self, image: np.ndarray) -> float:
+        # Convert image to grayscale
+        grey = self.convert_to_greyscale(image)
+
+        # Calcula os contornos na imagem
+        contours, _ = cv2.findContours(grey, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Encontra o maior contorno (maior área)
+        max_contour = max(contours, key=cv2.contourArea)
+
+        # Calcula o retângulo delimitador do maior contorno
+        x, y, w, h = cv2.boundingRect(max_contour)
+
+        # Calcula a área do maior contorno
+        object_area = w * h
+
+        # Calcula a fração de tamanho da ROI em relação à resolução da imagem
+        resolution = min(image.shape[0], image.shape[1])
+        roi_size_fraction = object_area / (resolution * resolution)  # Normalizado pela resolução ao quadrado
+
+        return roi_size_fraction
+
+    def remove_overlapping_lines(self, lines: List) -> List:
+        # Lista para armazenar índices das linhas a serem removidas
+        lines_to_remove = set()
+
+        # Itera sobre todas as combinações possíveis de pares de linhas
+        for i in range(len(lines)):
+            if i in lines_to_remove:
+                continue
+            for j in range(i + 1, len(lines)):
+                if j in lines_to_remove:
+                    continue
+                # Coordenadas da primeira linha
+                x1, y1, x2, y2 = lines[i][0]
+                # Coordenadas da segunda linha
+                x3, y3, x4, y4 = lines[j][0]
+
+                # Calcula a interseção entre as duas linhas
+                intersection = self.line_intersection((x1, y1), (x2, y2), (x3, y3), (x4, y4))
+
+                # Verifica se há interseção
+                if intersection is not None:
+                    # Se houver interseção, marca ambas as linhas para remoção
+                    lines_to_remove.add(i)
+                    lines_to_remove.add(j)
+
+        # Remove as linhas marcadas para remoção
+        filtered_lines = [lines[i] for i in range(len(lines)) if i not in lines_to_remove]
+
+        return filtered_lines
+
+    def line_intersection(self, p1: Tuple[float, float], p2: Tuple[float, float],
+                        p3: Tuple[float, float], p4: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+        """
+        Calcula a interseção entre duas linhas definidas pelos pontos p1-p2 e p3-p4.
+        Retorna None se as linhas forem paralelas ou se a interseção estiver fora dos limites das linhas.
+        Retorna as coordenadas (x, y) da interseção se existir dentro dos limites das linhas.
+        """
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+        x4, y4 = p4
+
+        denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+
+        # Verifica se as linhas são paralelas
+        if denominator == 0:
+            return None
+
+        # Calcula as coordenadas da interseção
+        px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denominator
+        py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denominator
+
+        # Verifica se a interseção está dentro dos limites das linhas
+        if min(x1, x2) <= px <= max(x1, x2) and min(y1, y2) <= py <= max(y1, y2) \
+                and min(x3, x4) <= px <= max(x3, x4) and min(y3, y4) <= py <= max(y3, y4):
+            return px, py
+        else:
+            return None
+
 
     def find_densest_region(self, image: ndarray, lines, proximity_threshold=50):
         max_density = 0
@@ -225,20 +310,26 @@ class ReceiptEnhancer:
             max_block_intensity = np.max(block)
             min_block_intensity = np.min(block)
 
-            min_threshold = min_block_intensity + (mean_block_intensity * 0.05)
-            max_threshold = max_block_intensity - (mean_block_intensity * 0.05)
-
-            _, dark_regions = cv2.threshold(block, min_threshold, 255, cv2.THRESH_BINARY)
-            _, bright_regions = cv2.threshold(block, max_threshold, 255, cv2.THRESH_BINARY_INV)
-
-            dark_mask = cv2.bitwise_not(dark_regions)
-            bright_mask = cv2.bitwise_not(bright_regions)
-            tile_grid_size = max(8, int(mean_block_intensity * 0.03))
+            resolution = min(block.shape[0], block.shape[1])
+            tile_grid_size = max(3, int(resolution / 150))
 
             clahe = cv2.createCLAHE(clipLimit=min(2.0, mean_block_intensity * 0.05),
                                     tileGridSize=(tile_grid_size, tile_grid_size))
 
             block_clahe = clahe.apply(block.astype(np.uint8))
+
+            mean_clahe_intensity = np.mean(block_clahe)
+            adapt_factor_min_clahe = min(0.05, mean_clahe_intensity / 255)
+            adapt_factor_max_clahe = min(0.05, mean_clahe_intensity / 255)
+
+            min_threshold_clahe = mean_clahe_intensity * adapt_factor_min_clahe
+            max_threshold_clahe = mean_clahe_intensity * adapt_factor_max_clahe
+
+            _, dark_regions = cv2.threshold(block_clahe, min_threshold_clahe, 255, cv2.THRESH_BINARY)
+            _, bright_regions = cv2.threshold(block_clahe, max_threshold_clahe, 255, cv2.THRESH_BINARY_INV)
+
+            dark_mask = cv2.bitwise_not(dark_regions)
+            bright_mask = cv2.bitwise_not(bright_regions)
 
             texture_smoothed_block = cv2.bilateralFilter(block_clahe,
                                                          d=max(10, int(0.1 * tile_grid_size)),
@@ -254,27 +345,32 @@ class ReceiptEnhancer:
             black_adaptive = cv2.bitwise_and(black_adaptive, black_adaptive, mask=bright_mask)
             white_adaptive = cv2.bitwise_and(white_adaptive, white_adaptive, mask=dark_mask)
 
-            adaptive_block = cv2.addWeighted(block_clahe, 1, black_adaptive, 0.3, 0)
-            adaptive_block = cv2.addWeighted(adaptive_block, 1, white_adaptive, 0.3, 0)
-            adaptive_block_color = cv2.cvtColor(adaptive_block, cv2.COLOR_GRAY2BGR)
+            local_std_dev = np.std(block_clahe)
+            beta = max(0.1, min(1.0, (local_std_dev / 255) * 2))
 
-            adaptive_block = cv2.bilateralFilter(adaptive_block_color,
+            adaptive_block = cv2.addWeighted(block_clahe, 1, white_adaptive, beta, 0)
+            adaptive_block = cv2.addWeighted(adaptive_block, 1, black_adaptive, beta, 0)
+
+            adaptive_block = cv2.bilateralFilter(adaptive_block,
                                                  d=max(10, int(0.1 * tile_grid_size)),
                                                  sigmaColor=int(0.1 * mean_block_intensity),
                                                  sigmaSpace=int(0.1 * tile_grid_size))
 
             local_std_dev = np.std(adaptive_block)
+            local_variance = np.var(adaptive_block)
+            adjusted_variance = max(10, local_variance)
 
-            sharpness_strength = max(0.2, min(1.0, local_std_dev / 100))
-            sharpness_block = cv2.detailEnhance(adaptive_block, sigma_s=sharpness_strength, sigma_r=0.5)
-            sharpness_block = cv2.cvtColor(sharpness_block, cv2.COLOR_BGR2GRAY)
+            sharpness_block_color = cv2.detailEnhance(cv2.cvtColor(adaptive_block, cv2.COLOR_GRAY2BGR),
+                                                      sigma_s=max(0.2, min(1.0, local_std_dev / 100)),
+                                                      sigma_r=max(0.1, min(2.0, np.sqrt(adjusted_variance))))
+
+            sharpness_block = cv2.cvtColor(sharpness_block_color, cv2.COLOR_BGR2GRAY)
 
             adaptive_blocks_final.append(sharpness_block)
 
         adaptive_image = self.__build_image_from_blocks(adaptive_blocks_final)
 
         std_dev = np.std(adaptive_image)
-
         adaptive_image = cv2.bilateralFilter(adaptive_image,
                                              d=max(10, int(0.1 * std_dev)),
                                              sigmaColor=int(0.1 * std_dev),

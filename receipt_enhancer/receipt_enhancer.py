@@ -307,23 +307,34 @@ class ReceiptEnhancer:
 
         for block in blocks:
             mean_block_intensity = np.mean(block)
+            std_block_intensity = np.std(block)
             max_block_intensity = np.max(block)
             min_block_intensity = np.min(block)
 
             resolution = min(block.shape[0], block.shape[1])
+
+            clip_limit = min(max(3.0, 2.0 * std_block_intensity / (mean_block_intensity - min_block_intensity + 1e-6)), 50.0)
             tile_grid_size = max(3, int(resolution / 150))
 
-            clahe = cv2.createCLAHE(clipLimit=min(2.0, mean_block_intensity * 0.05),
+            clahe = cv2.createCLAHE(clipLimit=clip_limit,
                                     tileGridSize=(tile_grid_size, tile_grid_size))
 
             block_clahe = clahe.apply(block.astype(np.uint8))
+            alpha, beta, gamma = self.__get_adaptive_alpha_beta_gamma(image)
+
+            gamma_corrected = np.clip(255.0 * (block_clahe / 255.0) ** gamma, 0, 255).astype(np.uint8)
+
+            block_clahe = gamma_corrected.astype(np.uint8)
 
             mean_clahe_intensity = np.mean(block_clahe)
-            adapt_factor_min_clahe = min(0.05, mean_clahe_intensity / 255)
-            adapt_factor_max_clahe = min(0.05, mean_clahe_intensity / 255)
+            max_clahe_intensity = np.max(block_clahe)
+            min_clahe_intensity = np.min(block_clahe)
 
-            min_threshold_clahe = mean_clahe_intensity * adapt_factor_min_clahe
-            max_threshold_clahe = mean_clahe_intensity * adapt_factor_max_clahe
+            adapt_factor_min_clahe = min(1.0, (mean_clahe_intensity - min_clahe_intensity) / 255)
+            adapt_factor_max_clahe = min(1.0, (max_clahe_intensity - mean_clahe_intensity) / 255)
+
+            min_threshold_clahe = mean_block_intensity * adapt_factor_min_clahe
+            max_threshold_clahe = mean_block_intensity * adapt_factor_max_clahe
 
             _, dark_regions = cv2.threshold(block_clahe, min_threshold_clahe, 255, cv2.THRESH_BINARY)
             _, bright_regions = cv2.threshold(block_clahe, max_threshold_clahe, 255, cv2.THRESH_BINARY_INV)

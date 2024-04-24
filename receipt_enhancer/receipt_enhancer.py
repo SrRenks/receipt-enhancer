@@ -295,6 +295,27 @@ class ReceiptEnhancer:
 
         return max(0, min(5, best_clip_limit))
 
+    def __reduce_noise_and_texture(self, block):
+
+        f_transform = np.fft.fft2(block)
+        f_transform_shifted = np.fft.fftshift(f_transform)
+        magnitude_spectrum = 20 * np.log(np.abs(f_transform_shifted))
+        _, thresholded_spectrum = cv2.threshold(magnitude_spectrum, np.mean(magnitude_spectrum), 255, cv2.THRESH_BINARY)
+
+        high_frequency_mask = np.fft.ifftshift(thresholded_spectrum)
+        high_frequency_mask = np.fft.ifft2(high_frequency_mask)
+        high_frequency_mask = np.abs(high_frequency_mask)
+
+        high_frequency_mask = cv2.normalize(high_frequency_mask, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+        high_frequency_mask = (high_frequency_mask * 255).astype(np.uint8)
+
+        equalized_block = cv2.equalizeHist(block)
+        _, text_mask = cv2.threshold(equalized_block, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+
+        smoothed_block = np.where(text_mask == 0, cv2.medianBlur(block, 5), block)
+
+        return smoothed_block
+
     def adaptive_local_contrast(self, image: np.ndarray) -> np.ndarray:
         image = self.convert_to_greyscale(image)
         blocks = self.__segment_image_into_blocks(image)
@@ -304,7 +325,7 @@ class ReceiptEnhancer:
         global_mean_intensity = np.mean(image)
 
         for block in blocks:
-
+            block = self.__reduce_noise_and_texture(block)
             mean_block_intensity = np.mean(block)
             max_block_intensity = np.max(block)
 

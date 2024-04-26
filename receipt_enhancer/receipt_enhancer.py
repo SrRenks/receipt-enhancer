@@ -299,7 +299,7 @@ class ReceiptEnhancer:
 
         f_transform = np.fft.fft2(block)
         f_transform_shifted = np.fft.fftshift(f_transform)
-        magnitude_spectrum = 20 * np.log(np.abs(f_transform_shifted))
+        magnitude_spectrum = 20 * np.log(np.abs(f_transform_shifted) + 1e-10)
         _, thresholded_spectrum = cv2.threshold(magnitude_spectrum, np.mean(magnitude_spectrum), 255, cv2.THRESH_BINARY)
 
         high_frequency_mask = np.fft.ifftshift(thresholded_spectrum)

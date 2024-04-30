@@ -28,6 +28,7 @@ class ReceiptEnhancer:
         canny_lower_threshold = int(max(0, mean_intensity * 0.5))
         canny_upper_threshold = int(min(255, mean_intensity * 1.5))
         aperture_size = min(max(3, int(resolution / 500)), 7)
+        aperture_size += aperture_size % 2 - 1
 
         edges = cv2.Canny(binary, canny_lower_threshold, canny_upper_threshold, apertureSize=aperture_size)
 

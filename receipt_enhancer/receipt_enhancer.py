@@ -11,6 +11,12 @@ class ReceiptEnhancer:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         return image
 
+    def adaptive_gaussian_blur(self, image: np.ndarray) -> np.ndarray:
+        resolution = min(image.shape[0], image.shape[1])
+        kernel_size = max(7, int(resolution / 50))
+        kernel_size += kernel_size % 2 - 1
+        return cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
+
     def get_hough_lines(self, image: np.ndarray,
                         length: Tuple[float, float],
                         min_distance: Tuple[float, float] = (0, 0)) -> List:
@@ -18,15 +24,16 @@ class ReceiptEnhancer:
         if len(image.shape) > 2:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        binary = self.adaptive_binary_threshold(image)
+        binary = self.adaptive_binary_threshold(self.adaptive_gaussian_blur(image))
 
         if np.count_nonzero(binary) == 0:
             return []
 
         resolution = min(image.shape[0], image.shape[1])
-        mean_intensity = np.mean(image)
-        canny_lower_threshold = int(max(0, mean_intensity * 0.5))
-        canny_upper_threshold = int(min(255, mean_intensity * 1.5))
+        mean_intensity = np.mean(binary)
+        std_intensity = np.std(binary)
+        canny_lower_threshold = int(max(0, mean_intensity - std_intensity))
+        canny_upper_threshold = int(min(255, mean_intensity + 2 * std_intensity))
         aperture_size = min(max(3, int(resolution / 500)), 7)
         aperture_size += aperture_size % 2 - 1
 
@@ -34,7 +41,6 @@ class ReceiptEnhancer:
 
         roi_size_fraction = self.calculate_roi_size_fraction(image)
         roi_size = min(image.shape[0], image.shape[1]) * roi_size_fraction
-        intersection_distance_threshold = roi_size * 0.01
 
         hough_threshold = max(1, int(roi_size / 10))
         max_gap = max(1, int(resolution / 100))
@@ -62,9 +68,8 @@ class ReceiptEnhancer:
                     lines_to_remove.add(i)
                     lines_to_remove.add(j)
 
-        filtered_lines = [lines[i] for i in range(len(lines)) if i not in lines_to_remove]
+        return self.remove_overlapping_lines([lines[i] for i in range(len(lines)) if i not in lines_to_remove])
 
-        return filtered_lines
 
     def calculate_roi_size_fraction(self, image: np.ndarray) -> float:
         grey = self.convert_to_greyscale(image)
@@ -106,19 +111,23 @@ class ReceiptEnhancer:
 
     def line_intersection(self, p1: Tuple[float, float], p2: Tuple[float, float],
                           p3: Tuple[float, float], p4: Tuple[float, float]) -> Optional[Tuple[float, float]]:
-
         x1, y1 = p1
         x2, y2 = p2
         x3, y3 = p3
         x4, y4 = p4
 
+        x1, y1, x2, y2, x3, y3, x4, y4 = map(np.float64, [x1, y1, x2, y2, x3, y3, x4, y4])
+
         denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
 
-        if denominator == 0:
+        if np.isclose(denominator, 0):
             return None
 
-        px = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / denominator
-        py = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / denominator
+        numerator_x = (x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)
+        numerator_y = (x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)
+
+        px = numerator_x / denominator
+        py = numerator_y / denominator
 
         if min(x1, x2) <= px <= max(x1, x2) and min(y1, y2) <= py <= max(y1, y2) \
                 and min(x3, x4) <= px <= max(x3, x4) and min(y3, y4) <= py <= max(y3, y4):
